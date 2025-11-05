@@ -1,69 +1,79 @@
-import joblib  # Để tải mô hình đã lưu
-from fastapi import FastAPI  # Thư viện API
-from pydantic import BaseModel  # Để định nghĩa input đầu vào
+import joblib
+import pandas as pd
+from fastapi import FastAPI
+from starlette.responses import Response
 
-# Khởi tạo ứng dụng FastAPI
+# === BƯỚC 1: COPY CÁC THƯ VIỆN TIỀN XỬ LÝ VÀO ĐÂY ===
+import re
+import nltk
+from nltk.corpus import stopwords
+from nltk.tokenize import word_tokenize
+from nltk.stem import WordNetLemmatizer
+
+# === TẢI DỮ LIỆU NLTK (chỉ cần chạy 1 lần) ===
+# (Chúng ta đặt nó ở đây để đảm bảo server luôn có)
+nltk.download('punkt', quiet=True)
+nltk.download('stopwords', quiet=True)
+nltk.download('wordnet', quiet=True)
+
 app = FastAPI()
 
-# 1. TẢI CÁC FILE ĐÃ LƯU
-# Tải "bộ từ điển" TF-IDF
+# === TẢI MODEL VÀ VECTORIZER ===
 try:
     tfidf_vec = joblib.load('tfidf_vectorizer.pkl')
     print("Tải tfidf_vectorizer.pkl thành công!")
 except FileNotFoundError:
-    print("LỖI: Không tìm thấy file tfidf_vectorizer.pkl")
     tfidf_vec = None
 
-# Tải "bộ não" Logistic Regression
 try:
     model = joblib.load('model_logreg.pkl')
     print("Tải logistic_regression_model.pkl thành công!")
 except FileNotFoundError:
-    print("LỖI: Không tìm thấy file logistic_regression_model.pkl")
     model = None
 
 
-# 2. ĐỊNH NGHĨA INPUT
-# Định nghĩa kiểu dữ liệu mà API sẽ nhận vào
-# Nó phải là một object JSON có 1 trường tên là "text"
-class ReviewInput(BaseModel):
-    text: str
+# === BƯỚC 2: COPY HÀM TIỀN XỬ LÝ VÀO ĐÂY ===
+def preprocess_text(text):
+    if pd.isna(text):  # (Giả sử bạn cũng import pandas as pd)
+        return ""
+
+    # 1. Chuyển thành chữ thường
+    text = str(text).lower()
+
+    # 2. Xóa URL và ký tự đặc biệt (chỉ giữ chữ cái và khoảng trắng)
+    text = re.sub(r'http[s]?://\S+|www\.\S+', '', text)  # Xóa URL
+    text = re.sub(r'[^\w\s]', '', text)  # Xóa icon, dấu câu, số
+
+    # 3. Tokenize (tách từ)
+    tokens = word_tokenize(text)
+
+    # 4. Loại bỏ stopwords
+    stop_words = set(stopwords.words('english'))
+    tokens = [word for word in tokens if word not in stop_words and len(word) > 1]
+
+    # 5. Lemmatization (đưa về dạng gốc)
+    lemmatizer = WordNetLemmatizer()
+    tokens = [lemmatizer.lemmatize(word) for word in tokens]
+
+    # Ghép lại thành chuỗi
+    return ' '.join(tokens)
 
 
-# 3. TẠO ENDPOINT (ĐƯỜNG DẪN)
-# Tạo một endpoint tên là /predict
-# Nó sẽ nhận dữ liệu kiểu POST
-@app.post("/predict")
-def predict_sentiment(review_input: ReviewInput):
-    # Lấy text thô từ input (ví dụ: "This product is amazing")
-    raw_text = review_input.text
-    print(f"Nhận được văn bản: {raw_text}")
+# === BƯỚC 3: SỬA LẠI ENDPOINT ===
+@app.get("/predict", response_class=Response)
+def predict_sentiment(text: str):
+    raw_text = text
+    print(f"Nhận được văn bản thô: {raw_text}")
 
-    # LƯU Ý QUAN TRỌNG:
-    # Bạn phải thực hiện LẠI bước Tiền xử lý (Preprocessing)
-    # (chuyển chữ thường, xóa icon, lemmatize...)
-    # cho `raw_text` giống hệt như cách bạn đã làm ở Bước 1.
-    # (Đoạn code này chưa bao gồm hàm preprocessing, bạn cần tự thêm vào)
+    # === THAY THẾ DÒNG TẠM THỜI BẰNG HÀM THẬT ===
+    clean_text = preprocess_text(raw_text)
+    print(f"Văn bản đã làm sạch: {clean_text}")
 
-    # TẠM THỜI, ta giả sử `raw_text` đã sạch
-    # (Trong thực tế bạn phải thêm hàm clean_text() ở đây)
-    clean_text = raw_text.lower()  # VÍ DỤ TẠM
-
-    # 1. Biến text sạch thành một list (vì TfidfVectorizer cần đầu vào là list)
-    text_to_vectorize = [clean_text]
-
-    # 2. Dùng TF-IDF đã tải để biến chữ thành SỐ
-    # (Dùng .transform() chứ KHÔNG dùng .fit_transform())
-    vectorized_text = tfidf_vec.transform(text_to_vectorize)
-
-    # 3. Dùng MÔ HÌNH đã tải để DỰ ĐOÁN
+    # (Các bước còn lại giữ nguyên)
+    vectorized_text = tfidf_vec.transform([clean_text])
     prediction = model.predict(vectorized_text)
-
-    # prediction sẽ là một array (ví dụ: ['Pos']),
-    # chúng ta lấy phần tử đầu tiên
     result = prediction[0]
 
     print(f"Dự đoán là: {result}")
 
-    # 4. Trả kết quả về dạng JSON
-    return {"sentiment": result}
+    return Response(content=result, media_type="text/plain")
